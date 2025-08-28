@@ -11,6 +11,8 @@ contract StorageEvents is Test {
     address TREASURY = address(0xBEEF);
     // add near the top if you don’t already have a USER
     address USER = makeAddr("user");
+    address USER2 = makeAddr("user2");
+    uint256 PRECISION = 1e18;
 
     // mirror the event so expectEmit can match it
     event Withdrawn(
@@ -175,5 +177,164 @@ contract StorageEvents is Test {
         assertEq(start, 0);
         assertEq(unlockAt, 0);
         assertEq(rewardDebt, 0);
+    }
+
+    function testRagequitRevert() public {
+        vm.deal(USER, 10 ether);
+        vm.txGasPrice(0);
+
+        uint256 duration = 14 days;
+        vm.prank(USER);
+        uint256 id = vault.deposit{value: 1 ether}(duration);
+
+        vm.prank(address(0));
+
+        vm.expectRevert();
+        vault.ragequit(id);
+
+        vm.prank(address(this)); //just to check if another contract can't call
+
+        vm.expectRevert();
+        vault.ragequit(id);
+
+        vm.warp(block.timestamp + duration + 1);
+
+        vm.prank(USER); //just to check if another contract can't call
+
+        vm.expectRevert();
+        vault.ragequit(id);
+    }
+
+    function testRagequitWithdrawDistributingCorrectly() public {
+        vm.deal(USER, 10 ether);
+        vm.deal(USER2, 10 ether);
+        vm.txGasPrice(0);
+
+        uint256 duration = 14 days;
+        vm.prank(USER);
+        uint256 id = vault.deposit{value: 1 ether}(duration);
+
+        vm.prank(USER2);
+        uint256 id2 = vault.deposit{value: 1 ether}(duration);
+
+        vm.prank(USER); //just to check if another contract can't call
+
+        vault.ragequit(id);
+
+        assertEq(vault.totalShares(), 1 ether);
+        (
+            address owner,
+            uint96 shares,
+            uint256 start,
+            uint256 unlockAt,
+            uint256 rewardDebt
+        ) = vault.positions(id);
+
+        assertEq(owner, address(0));
+        assertEq(shares, 0);
+        assertEq(start, 0);
+        assertEq(unlockAt, 0);
+        assertEq(rewardDebt, 0);
+    }
+
+    function testRagequitDistributesMathExactlyEqualShares() public {
+        vm.label(USER, "USER");
+        vm.label(USER2, "USER2");
+        vm.label(address(vault), "VAULT");
+        vm.label(TREASURY, "TREASURY");
+
+        vm.deal(USER, 10 ether);
+        vm.deal(USER2, 10 ether);
+        vm.txGasPrice(0);
+
+        uint256 duration = 14 days;
+
+        vm.prank(USER);
+        uint256 id1 = vault.deposit{value: 1 ether}(duration);
+
+        vm.prank(USER2);
+        uint256 id2 = vault.deposit{value: 1 ether}(duration);
+
+        (, uint96 shares1, uint256 start1, uint256 unlock1, ) = vault.positions(
+            id1
+        );
+
+        uint256 dur1 = unlock1 - start1;
+
+        uint256 t = start1 + (dur1 / 2) + 1;
+        vm.warp(t);
+
+        // 2) Snapshot pre-state (for delta checks)
+        uint256 preUser1 = USER.balance;
+        uint256 preTreasury = TREASURY.balance;
+        uint256 preVault = address(vault).balance;
+        uint256 preAcc = vault.accPenaltyPerShare();
+        uint256 preTotal = vault.totalShares();
+        uint256 rewardBefore = vault.pendingReward(id1); // should be 0 at this point
+
+        // 3) Act: USER ragequits
+        vm.prank(USER);
+        vault.ragequit(id1);
+
+        // 4) Compute expected values OFF-CHAIN (mirror contract math)
+        uint256 remaining = unlock1 - t; // (we warped to t just before calling)
+        uint256 penaltyBps = (uint256(vault.maxPenaltyBps()) * remaining) /
+            dur1;
+        uint256 principal1 = uint256(shares1);
+        uint256 penalty = (principal1 * penaltyBps) / 10_000;
+        uint256 fee = (penalty * uint256(vault.treasuryFeeBps())) / 10_000;
+        uint256 toStakers = penalty - fee;
+
+        // Index delta expected (there's 1 other staker with 1 ether)
+        uint256 expectedDeltaAcc = (toStakers * PRECISION) /
+            (preTotal - shares1); // == toStakers
+
+        assertEq(
+            USER.balance,
+            preUser1 + (principal1 - penalty + rewardBefore),
+            "USER payout incorrect"
+        );
+
+        // Treasury got the fee (all of it; staker-share stayed in vault)
+        assertEq(TREASURY.balance, preTreasury + fee, "Treasury fee incorrect");
+
+        // Vault paid out (payout + fee); staker-share (toStakers) stayed inside
+        assertEq(
+            address(vault).balance,
+            preVault - (fee + (principal1 - penalty + rewardBefore)),
+            "Vault balance delta incorrect"
+        );
+
+        // Index bumped exactly by toStakers / remainingShares
+        assertEq(
+            vault.accPenaltyPerShare() - preAcc,
+            expectedDeltaAcc,
+            "accPenaltyPerShare delta incorrect"
+        );
+
+        // Shares/accounting
+        assertEq(
+            vault.totalShares(),
+            preTotal - shares1,
+            "totalShares not reduced"
+        );
+
+        // 6) Stayer's pending reward == toStakers (equal shares, zero prior rewardDebt)
+        uint256 stayerPending = vault.pendingReward(id2);
+        assertEq(stayerPending, toStakers, "stayer pending reward incorrect");
+
+        // 7) Quitter position cleared
+        (
+            address owner_,
+            uint96 shares_,
+            uint256 s_,
+            uint256 u_,
+            uint256 rd_
+        ) = vault.positions(id1);
+        assertEq(owner_, address(0));
+        assertEq(shares_, 0);
+        assertEq(s_, 0);
+        assertEq(u_, 0);
+        assertEq(rd_, 0);
     }
 }

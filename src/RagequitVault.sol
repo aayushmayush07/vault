@@ -15,7 +15,7 @@ contract RagequitVault {
     address public immutable treasury;
     uint256 public totalShares = 0;
     uint256 public accPenaltyPerShare = 0;
-    uint constant PRECISION = 1e18;
+    uint256 constant PRECISION = 1e18;
 
     uint256 public nextId = 1;
     mapping(uint256 => Position) public positions;
@@ -101,19 +101,71 @@ contract RagequitVault {
 
     function withdraw(uint256 _id) public {
         Position storage p = positions[_id];
-        require(p.owner != address(0), "position does not exist");
+        address owner = p.owner;
+        require(owner != address(0), "position does not exist");
         require(msg.sender == p.owner, "not position owner");
-        require(block.timestamp >= p.unlockAt, "not yet mature");
         require(block.timestamp >= p.unlockAt, "your stake hasn't matured yet");
 
         uint96 principal = p.shares;
         uint256 reward = pendingReward(_id);
         totalShares -= p.shares;
 
-        (bool sent, ) = p.owner.call{value: principal + reward}("");
+        delete positions[_id];
+        (bool sent, ) = owner.call{value: principal + reward}("");
         require(sent, "Failed to send Ether");
 
-        emit Withdrawn(_id, p.owner, principal, reward);
-        delete positions[_id];
+        emit Withdrawn(_id, owner, principal, reward);
     }
+
+    function ragequit(uint256 _id) public {
+        Position storage p = positions[_id];
+        address owner = p.owner;
+        uint96 principal = p.shares;
+        uint256 reward = pendingReward(_id);
+
+        uint256 start = p.start;
+        uint256 unlockAt = p.unlockAt;
+        require(owner != address(0), "address doesnt exist for this position");
+        require(owner == msg.sender, "Only owner can withdraw");
+        require(
+            block.timestamp < p.unlockAt,
+            "Your contract has matured, press withdraw to get the amount plus pending reward if any"
+        );
+
+        uint256 totalDuration = unlockAt - start;
+        uint256 remainingDuration = unlockAt - block.timestamp;
+        uint256 penaltyBps = (maxPenaltyBps * remainingDuration) /
+            totalDuration;
+        uint256 penalty = (principal * penaltyBps) / 10_000;
+
+        uint256 treasuryFee = (penalty * treasuryFeeBps) / 10_000;
+
+        uint256 toStakers = penalty - treasuryFee;
+
+        uint256 remainingShares = totalShares - principal;
+
+        if (remainingShares > 0) {
+            uint256 delta = (toStakers * PRECISION) / remainingShares;
+            accPenaltyPerShare += delta;
+        } else {
+            treasuryFee += toStakers;
+        }
+
+        totalShares -= principal;
+        delete positions[_id];
+
+        (bool sent, ) = treasury.call{value: treasuryFee}("");
+        require(sent, "Failed to send Ether to treasury");
+
+        (bool sentToOwner, ) = owner.call{value: principal - penalty + reward}(
+            ""
+        );
+        require(sentToOwner, "Failed to send Ether to the owner");
+
+        emit PenaltyDistributed(toStakers, accPenaltyPerShare);
+        emit Ragequit(_id, owner, penalty, principal - penalty + reward);
+    }
+
+
+    
 }
