@@ -40,6 +40,13 @@ contract StorageEvents is Test {
         assertEq(vault.totalShares(), 0);
         assertEq(vault.accPenaltyPerShare(), 0);
         assertEq(vault.nextId(), 1);
+        (address owner, , , , ) = vault.positions(0); // id = 0 (never used)
+        assertEq(owner, address(0));
+
+        // if you want to check id 1 before any deposit:
+        (address owner1, , , , ) = vault.positions(1);
+        assertEq(owner1, address(0));
+        assertEq(PRECISION, 1e18);
     }
 
     function testConstructorRevertsOnBadInput() public {
@@ -67,9 +74,11 @@ contract StorageEvents is Test {
 
     function testDepositStoresPositionAndEmitsEvent() public {
         uint256 duration = 30 days;
+        vm.deal(USER, 10 ether);
+        vm.prank(USER);
 
-        vm.expectEmit(true, true, true, true);
-        emit Deposited(1, address(this), 1 ether, duration);
+        vm.expectEmit(true, true, false, true);
+        emit Deposited(1, USER, 1 ether, duration);
 
         uint256 id = vault.deposit{value: 1 ether}(duration);
         assertEq(id, 1);
@@ -85,12 +94,38 @@ contract StorageEvents is Test {
             uint256 unlockAt,
             uint256 rewardDebt
         ) = vault.positions(id);
-        assertEq(owner, address(this));
+        assertEq(owner, USER);
         assertEq(shares, uint96(1 ether));
         assertGt(start, 0);
         assertEq(unlockAt - start, duration);
         // With accPenaltyPerShare == 0 at start, rewardDebt should be 0
         assertEq(rewardDebt, 0);
+
+        vm.deal(USER2, 10 ether);
+        vm.prank(USER2);
+
+        vm.expectEmit(true, true, true, true);
+        emit Deposited(2, USER2, 5 ether, duration);
+
+        uint256 id2 = vault.deposit{value: 5 ether}(duration);
+        assertEq(id2, 2);
+        assertEq(vault.totalShares(), 6 ether);
+        assertEq(vault.nextId(), 3);
+        console.log(vault.nextId());
+
+        // Read back the stored position
+        (
+            address owner2,
+            uint96 shares2,
+            uint256 start2,
+            uint256 unlockAt2,
+            uint256 rewardDebt2
+        ) = vault.positions(id2);
+        assertEq(owner2, USER2);
+        assertEq(shares2, uint96(5 ether));
+        assertGt(start2, 0);
+        assertEq(unlockAt2 - start2, duration);
+        assertEq(rewardDebt2, 0);
     }
 
     event Deposited(
@@ -149,9 +184,6 @@ contract StorageEvents is Test {
 
         // expect the Withdrawn event (reward = 0 in this phase)
         vm.expectEmit(true, true, false, true);
-        // vm.expectEmit(address(vault));
-        // vm.expectEmit(address(vault), true, true, false, true);
-
         emit Withdrawn(id, USER, 1 ether, 0);
 
         vm.prank(USER);
@@ -192,7 +224,7 @@ contract StorageEvents is Test {
         vm.expectRevert();
         vault.ragequit(id);
 
-        vm.prank(address(this)); //just to check if another contract can't call
+        vm.prank(USER2); //just to check if another contract can't call
 
         vm.expectRevert();
         vault.ragequit(id);
@@ -205,6 +237,42 @@ contract StorageEvents is Test {
         vault.ragequit(id);
     }
 
+    function testRagequitWithdrawDistributingCorrectlyWithRemainingShareZero()
+        public
+    {
+        // vm.deal(USER, 10 ether);
+        vm.deal(USER2, 10 ether);
+        vm.txGasPrice(0);
+
+        uint256 duration = 14 days;
+
+        vm.prank(USER2);
+
+        uint256 id2 = vault.deposit{value: 1 ether}(duration);
+
+        vm.warp(7 days);
+        vm.prank(USER2); //just to check if another contract can't call
+
+        vault.ragequit(id2);
+
+        assertEq(vault.totalShares(), 0 ether);
+        (
+            address owner,
+            uint96 shares,
+            uint256 start,
+            uint256 unlockAt,
+            uint256 rewardDebt
+        ) = vault.positions(id2);
+
+        assertEq(owner, address(0));
+        assertEq(shares, 0);
+        assertEq(start, 0);
+        assertEq(unlockAt, 0);
+        assertEq(rewardDebt, 0);
+        assertEq(vault.accPenaltyPerShare(), 0);
+        assertEq(vault.treasury().balance, 25e15);
+    }
+
     function testRagequitWithdrawDistributingCorrectly() public {
         vm.deal(USER, 10 ether);
         vm.deal(USER2, 10 ether);
@@ -215,11 +283,13 @@ contract StorageEvents is Test {
         uint256 id = vault.deposit{value: 1 ether}(duration);
 
         vm.prank(USER2);
+
         uint256 id2 = vault.deposit{value: 1 ether}(duration);
 
-        vm.prank(USER); //just to check if another contract can't call
+        vm.warp(7 days);
+        vm.prank(USER2); //just to check if another contract can't call
 
-        vault.ragequit(id);
+        vault.ragequit(id2);
 
         assertEq(vault.totalShares(), 1 ether);
         (
@@ -228,13 +298,15 @@ contract StorageEvents is Test {
             uint256 start,
             uint256 unlockAt,
             uint256 rewardDebt
-        ) = vault.positions(id);
+        ) = vault.positions(id2);
 
         assertEq(owner, address(0));
         assertEq(shares, 0);
         assertEq(start, 0);
         assertEq(unlockAt, 0);
         assertEq(rewardDebt, 0);
+        assertEq(vault.accPenaltyPerShare(), 2475e13);
+        assertEq(vault.treasury().balance, 25e13);
     }
 
     function testRagequitDistributesMathExactlyEqualShares() public {
@@ -336,5 +408,72 @@ contract StorageEvents is Test {
         assertEq(s_, 0);
         assertEq(u_, 0);
         assertEq(rd_, 0);
+    }
+
+    function testharvestProfitReverts() public {
+        vm.deal(USER, 10 ether);
+        vm.deal(USER2, 10 ether);
+
+        uint256 duration = 14 days;
+
+        vm.prank(USER);
+        uint256 id1 = vault.deposit{value: 1 ether}(duration);
+
+        vm.prank(USER2);
+        uint256 id2 = vault.deposit{value: 1 ether}(duration);
+
+        (, uint96 shares1, uint256 start1, uint256 unlock1, ) = vault.positions(
+            id1
+        );
+
+        vm.warp(7 days);
+
+        vm.prank(USER2);
+        vault.ragequit(id2);
+
+        vm.prank(address(0));
+        vm.expectRevert();
+        vault.harvestProfit(id1);
+
+        vm.prank(address(this));
+        vm.expectRevert();
+        vault.harvestProfit(id1);
+    }
+
+
+        function testharvestProfit() public {
+        vm.deal(USER, 10 ether);
+        vm.deal(USER2, 10 ether);
+
+        uint256 duration = 14 days;
+
+        vm.prank(USER);
+        uint256 id1 = vault.deposit{value: 1 ether}(duration);
+
+        vm.prank(USER2);
+        uint256 id2 = vault.deposit{value: 1 ether}(duration);
+
+        (, uint96 shares1, ,, ) = vault.positions(
+            id1
+        );
+
+        vm.warp(7 days);
+
+        vm.prank(USER2);
+        vault.ragequit(id2);
+
+
+        vm.prank(USER);
+        
+        vault.harvestProfit(id1);
+               (, , ,,uint256 postRewardDebt ) = vault.positions(
+            id1
+        );
+        
+
+        assertEq(vault.pendingReward(id1),0);
+        assertEq(postRewardDebt,(shares1*vault.accPenaltyPerShare())/PRECISION);
+
+
     }
 }

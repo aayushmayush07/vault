@@ -166,6 +166,16 @@ contract RagequitVault {
         emit Ragequit(_id, owner, penalty, principal - penalty + reward);
     }
 
+    function harvestProfit(uint256 _id) public {
+        Position storage p = positions[_id];
+        address owner = p.owner;
+        require(owner != address(0), "Owner have empty address");
+        require(owner == msg.sender, "Only owner can retrieve the profit");
 
-    
+        uint256 owed = pendingReward(_id);
+        p.rewardDebt = (p.shares * accPenaltyPerShare) / PRECISION;
+
+        (bool sentToOwner, ) = owner.call{value: owed}("");
+        require(sentToOwner, "Failed to send Ether to the owner");
+    }
 }
