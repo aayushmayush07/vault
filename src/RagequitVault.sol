@@ -1,5 +1,45 @@
 // SPDX-License-Identifier: MIT
+
+// Layout of Contract:
+// version
+// imports
+// errors
+// interfaces, libraries, contracts
+// Type declarations
+// state-variables
+// Events
+// Modifiers
+// Functions
+
+// Layout of Functions:
+// constructor
+// receive function (if-exists)
+// fallback function (if-exists)
+// external
+// public
+// internal
+// private
+// view & pure functions
+
 pragma solidity ^0.8.24;
+
+// Errors
+error InvalidPenalty();
+error InvalidTreasuryFee();
+error ZeroAddressTreasury();
+error ZeroDeposit();
+error ZeroDuration();
+error PositionDoesNotExist();
+error NotOwner();
+error StakeNotMatured();
+error TransferFailed();
+error TreasuryTransferFailed();
+error AlreadyMatured();
+error EmptyOwner();
+error NothingToHarvest();
+error ReentrantCall();
+error DirectEtherNotAllowed();
+error UnknownFunctionCalled();
 
 contract RagequitVault {
     struct Position {
@@ -20,54 +60,43 @@ contract RagequitVault {
     uint256 public nextId = 1;
     mapping(uint256 => Position) public positions;
 
-    event Deposited(
-        uint256 indexed id,
-        address indexed owner,
-        uint256 amount,
-        uint256 duration
-    );
-    event Harvested(uint256 indexed id, address indexed owner, uint256 reward);
-    event Ragequit(
-        uint256 indexed id,
-        address indexed owner,
-        uint256 penalty,
-        uint256 payout
-    );
-    event Withdrawn(
-        uint256 indexed id,
-        address indexed owner,
-        uint256 principal,
-        uint256 reward
-    );
-    event PenaltyDistributed(
-        uint256 amountToStakers,
-        uint256 accPenaltyPerShare
-    );
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status = _NOT_ENTERED;
 
-    constructor(
-        uint16 _maxPenaltyBps,
-        uint16 _treasuryFeeBps,
-        address _treasury
-    ) {
-        require(
-            _maxPenaltyBps <= 10000,
-            "You are asking for more penalty than the amount"
-        );
-        require(
-            _treasuryFeeBps <= 10000,
-            "You are asking for more treasury than amount"
-        );
-        require(_treasury != address(0), "Give the right address");
+    event Deposited(uint256 indexed id, address indexed owner, uint256 amount, uint256 duration);
+    event Harvested(uint256 indexed id, address indexed owner, uint256 reward);
+    event Ragequit(uint256 indexed id, address indexed owner, uint256 penalty, uint256 payout);
+    event Withdrawn(uint256 indexed id, address indexed owner, uint256 principal, uint256 reward);
+    event PenaltyDistributed(uint256 amountToStakers, uint256 accPenaltyPerShare);
+
+    modifier nonReentrant() {
+        if (_status == _ENTERED) revert ReentrantCall();
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+
+    constructor(uint16 _maxPenaltyBps, uint16 _treasuryFeeBps, address _treasury) {
+        if (_maxPenaltyBps > 10000) revert InvalidPenalty();
+        if (_treasuryFeeBps > 10000) revert InvalidTreasuryFee();
+        if (_treasury == address(0)) revert ZeroAddressTreasury();
         maxPenaltyBps = _maxPenaltyBps;
         treasuryFeeBps = _treasuryFeeBps;
         treasury = _treasury;
     }
 
-    function deposit(
-        uint256 _durationSeconds
-    ) external payable returns (uint256 id) {
-        require(msg.value != 0, "Send something man");
-        require(_durationSeconds != 0, "Give time more than 0 seconds");
+    receive() external payable {
+        revert DirectEtherNotAllowed();
+    }
+
+    fallback() external payable {
+        revert UnknownFunctionCalled();
+    }
+
+    function deposit(uint256 _durationSeconds) external payable returns (uint256 id) {
+        if (msg.value == 0) revert ZeroDeposit();
+        if (_durationSeconds == 0) revert ZeroDuration();
         id = nextId++;
         Position storage people = positions[id];
 
@@ -76,9 +105,7 @@ contract RagequitVault {
         people.start = block.timestamp;
         people.unlockAt = block.timestamp + _durationSeconds;
 
-        people.rewardDebt =
-            (uint256(people.shares) * accPenaltyPerShare) /
-            PRECISION;
+        people.rewardDebt = (uint256(people.shares) * accPenaltyPerShare) / PRECISION;
 
         totalShares += people.shares;
 
@@ -99,25 +126,25 @@ contract RagequitVault {
         return accrued - p.rewardDebt;
     }
 
-    function withdraw(uint256 _id) public {
+    function withdraw(uint256 _id) public nonReentrant {
         Position storage p = positions[_id];
         address owner = p.owner;
-        require(owner != address(0), "position does not exist");
-        require(msg.sender == p.owner, "not position owner");
-        require(block.timestamp >= p.unlockAt, "your stake hasn't matured yet");
+        if (p.owner == address(0)) revert PositionDoesNotExist();
+        if (msg.sender != p.owner) revert NotOwner();
+        if (block.timestamp < p.unlockAt) revert StakeNotMatured();
 
         uint96 principal = p.shares;
         uint256 reward = pendingReward(_id);
         totalShares -= p.shares;
 
         delete positions[_id];
-        (bool sent, ) = owner.call{value: principal + reward}("");
-        require(sent, "Failed to send Ether");
+        (bool sent,) = owner.call{value: principal + reward}("");
+        if (!sent) revert TransferFailed();
 
         emit Withdrawn(_id, owner, principal, reward);
     }
 
-    function ragequit(uint256 _id) public {
+    function ragequit(uint256 _id) public nonReentrant {
         Position storage p = positions[_id];
         address owner = p.owner;
         uint96 principal = p.shares;
@@ -125,17 +152,13 @@ contract RagequitVault {
 
         uint256 start = p.start;
         uint256 unlockAt = p.unlockAt;
-        require(owner != address(0), "address doesnt exist for this position");
-        require(owner == msg.sender, "Only owner can withdraw");
-        require(
-            block.timestamp < p.unlockAt,
-            "Your contract has matured, press withdraw to get the amount plus pending reward if any"
-        );
+        if (owner == address(0)) revert PositionDoesNotExist();
+        if (msg.sender != owner) revert NotOwner();
+        if (block.timestamp >= p.unlockAt) revert AlreadyMatured();
 
         uint256 totalDuration = unlockAt - start;
         uint256 remainingDuration = unlockAt - block.timestamp;
-        uint256 penaltyBps = (maxPenaltyBps * remainingDuration) /
-            totalDuration;
+        uint256 penaltyBps = (maxPenaltyBps * remainingDuration) / totalDuration;
         uint256 penalty = (principal * penaltyBps) / 10_000;
 
         uint256 treasuryFee = (penalty * treasuryFeeBps) / 10_000;
@@ -147,6 +170,7 @@ contract RagequitVault {
         if (remainingShares > 0) {
             uint256 delta = (toStakers * PRECISION) / remainingShares;
             accPenaltyPerShare += delta;
+            emit PenaltyDistributed(toStakers, accPenaltyPerShare);
         } else {
             treasuryFee += toStakers;
         }
@@ -154,28 +178,27 @@ contract RagequitVault {
         totalShares -= principal;
         delete positions[_id];
 
-        (bool sent, ) = treasury.call{value: treasuryFee}("");
-        require(sent, "Failed to send Ether to treasury");
+        (bool sent,) = treasury.call{value: treasuryFee}("");
+        if (!sent) revert TreasuryTransferFailed();
 
-        (bool sentToOwner, ) = owner.call{value: principal - penalty + reward}(
-            ""
-        );
-        require(sentToOwner, "Failed to send Ether to the owner");
+        (bool sentToOwner,) = owner.call{value: principal - penalty + reward}("");
+        if (!sentToOwner) revert TransferFailed();
 
-        emit PenaltyDistributed(toStakers, accPenaltyPerShare);
         emit Ragequit(_id, owner, penalty, principal - penalty + reward);
     }
 
-    function harvestProfit(uint256 _id) public {
+    function harvestProfit(uint256 _id) public nonReentrant {
         Position storage p = positions[_id];
         address owner = p.owner;
-        require(owner != address(0), "Owner have empty address");
-        require(owner == msg.sender, "Only owner can retrieve the profit");
-
         uint256 owed = pendingReward(_id);
+        if (p.owner == address(0)) revert EmptyOwner();
+        if (msg.sender != p.owner) revert NotOwner();
+        if (owed == 0) revert NothingToHarvest();
+
         p.rewardDebt = (p.shares * accPenaltyPerShare) / PRECISION;
 
-        (bool sentToOwner, ) = owner.call{value: owed}("");
-        require(sentToOwner, "Failed to send Ether to the owner");
+        (bool sentToOwner,) = owner.call{value: owed}("");
+        if (!sentToOwner) revert TransferFailed();
+        emit Harvested(_id, owner, owed);
     }
 }

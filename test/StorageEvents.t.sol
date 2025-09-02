@@ -15,19 +15,10 @@ contract StorageEvents is Test {
     uint256 PRECISION = 1e18;
 
     // mirror the event so expectEmit can match it
-    event Withdrawn(
-        uint256 indexed id,
-        address indexed owner,
-        uint256 principal,
-        uint256 reward
-    );
+    event Withdrawn(uint256 indexed id, address indexed owner, uint256 principal, uint256 reward);
 
     function setUp() public {
-        vault = new RagequitVault({
-            _maxPenaltyBps: 500,
-            _treasuryFeeBps: 100,
-            _treasury: TREASURY
-        });
+        vault = new RagequitVault({_maxPenaltyBps: 500, _treasuryFeeBps: 100, _treasury: TREASURY});
     }
 
     function testConstructorParamsAreSet() public view {
@@ -40,11 +31,11 @@ contract StorageEvents is Test {
         assertEq(vault.totalShares(), 0);
         assertEq(vault.accPenaltyPerShare(), 0);
         assertEq(vault.nextId(), 1);
-        (address owner, , , , ) = vault.positions(0); // id = 0 (never used)
+        (address owner,,,,) = vault.positions(0); // id = 0 (never used)
         assertEq(owner, address(0));
 
         // if you want to check id 1 before any deposit:
-        (address owner1, , , , ) = vault.positions(1);
+        (address owner1,,,,) = vault.positions(1);
         assertEq(owner1, address(0));
         assertEq(PRECISION, 1e18);
     }
@@ -87,13 +78,7 @@ contract StorageEvents is Test {
         console.log(vault.nextId());
 
         // Read back the stored position
-        (
-            address owner,
-            uint96 shares,
-            uint256 start,
-            uint256 unlockAt,
-            uint256 rewardDebt
-        ) = vault.positions(id);
+        (address owner, uint96 shares, uint256 start, uint256 unlockAt, uint256 rewardDebt) = vault.positions(id);
         assertEq(owner, USER);
         assertEq(shares, uint96(1 ether));
         assertGt(start, 0);
@@ -114,13 +99,7 @@ contract StorageEvents is Test {
         console.log(vault.nextId());
 
         // Read back the stored position
-        (
-            address owner2,
-            uint96 shares2,
-            uint256 start2,
-            uint256 unlockAt2,
-            uint256 rewardDebt2
-        ) = vault.positions(id2);
+        (address owner2, uint96 shares2, uint256 start2, uint256 unlockAt2, uint256 rewardDebt2) = vault.positions(id2);
         assertEq(owner2, USER2);
         assertEq(shares2, uint96(5 ether));
         assertGt(start2, 0);
@@ -128,12 +107,7 @@ contract StorageEvents is Test {
         assertEq(rewardDebt2, 0);
     }
 
-    event Deposited(
-        uint256 indexed id,
-        address indexed owner,
-        uint256 amount,
-        uint256 duration
-    );
+    event Deposited(uint256 indexed id, address indexed owner, uint256 amount, uint256 duration);
 
     function testPendingRewardIsZeroRightAfterDeposit() public {
         uint256 id = vault.deposit{value: 1 ether}(30 days);
@@ -197,13 +171,7 @@ contract StorageEvents is Test {
         assertEq(vault.totalShares(), preTotalShares - 1 ether);
 
         // position is cleared
-        (
-            address owner,
-            uint96 shares,
-            uint256 start,
-            uint256 unlockAt,
-            uint256 rewardDebt
-        ) = vault.positions(id);
+        (address owner, uint96 shares, uint256 start, uint256 unlockAt, uint256 rewardDebt) = vault.positions(id);
         assertEq(owner, address(0));
         assertEq(shares, 0);
         assertEq(start, 0);
@@ -237,9 +205,7 @@ contract StorageEvents is Test {
         vault.ragequit(id);
     }
 
-    function testRagequitWithdrawDistributingCorrectlyWithRemainingShareZero()
-        public
-    {
+    function testRagequitWithdrawDistributingCorrectlyWithRemainingShareZero() public {
         // vm.deal(USER, 10 ether);
         vm.deal(USER2, 10 ether);
         vm.txGasPrice(0);
@@ -256,13 +222,7 @@ contract StorageEvents is Test {
         vault.ragequit(id2);
 
         assertEq(vault.totalShares(), 0 ether);
-        (
-            address owner,
-            uint96 shares,
-            uint256 start,
-            uint256 unlockAt,
-            uint256 rewardDebt
-        ) = vault.positions(id2);
+        (address owner, uint96 shares, uint256 start, uint256 unlockAt, uint256 rewardDebt) = vault.positions(id2);
 
         assertEq(owner, address(0));
         assertEq(shares, 0);
@@ -292,13 +252,7 @@ contract StorageEvents is Test {
         vault.ragequit(id2);
 
         assertEq(vault.totalShares(), 1 ether);
-        (
-            address owner,
-            uint96 shares,
-            uint256 start,
-            uint256 unlockAt,
-            uint256 rewardDebt
-        ) = vault.positions(id2);
+        (address owner, uint96 shares, uint256 start, uint256 unlockAt, uint256 rewardDebt) = vault.positions(id2);
 
         assertEq(owner, address(0));
         assertEq(shares, 0);
@@ -327,9 +281,7 @@ contract StorageEvents is Test {
         vm.prank(USER2);
         uint256 id2 = vault.deposit{value: 1 ether}(duration);
 
-        (, uint96 shares1, uint256 start1, uint256 unlock1, ) = vault.positions(
-            id1
-        );
+        (, uint96 shares1, uint256 start1, uint256 unlock1,) = vault.positions(id1);
 
         uint256 dur1 = unlock1 - start1;
 
@@ -350,22 +302,16 @@ contract StorageEvents is Test {
 
         // 4) Compute expected values OFF-CHAIN (mirror contract math)
         uint256 remaining = unlock1 - t; // (we warped to t just before calling)
-        uint256 penaltyBps = (uint256(vault.maxPenaltyBps()) * remaining) /
-            dur1;
+        uint256 penaltyBps = (uint256(vault.maxPenaltyBps()) * remaining) / dur1;
         uint256 principal1 = uint256(shares1);
         uint256 penalty = (principal1 * penaltyBps) / 10_000;
         uint256 fee = (penalty * uint256(vault.treasuryFeeBps())) / 10_000;
         uint256 toStakers = penalty - fee;
 
         // Index delta expected (there's 1 other staker with 1 ether)
-        uint256 expectedDeltaAcc = (toStakers * PRECISION) /
-            (preTotal - shares1); // == toStakers
+        uint256 expectedDeltaAcc = (toStakers * PRECISION) / (preTotal - shares1); // == toStakers
 
-        assertEq(
-            USER.balance,
-            preUser1 + (principal1 - penalty + rewardBefore),
-            "USER payout incorrect"
-        );
+        assertEq(USER.balance, preUser1 + (principal1 - penalty + rewardBefore), "USER payout incorrect");
 
         // Treasury got the fee (all of it; staker-share stayed in vault)
         assertEq(TREASURY.balance, preTreasury + fee, "Treasury fee incorrect");
@@ -378,31 +324,17 @@ contract StorageEvents is Test {
         );
 
         // Index bumped exactly by toStakers / remainingShares
-        assertEq(
-            vault.accPenaltyPerShare() - preAcc,
-            expectedDeltaAcc,
-            "accPenaltyPerShare delta incorrect"
-        );
+        assertEq(vault.accPenaltyPerShare() - preAcc, expectedDeltaAcc, "accPenaltyPerShare delta incorrect");
 
         // Shares/accounting
-        assertEq(
-            vault.totalShares(),
-            preTotal - shares1,
-            "totalShares not reduced"
-        );
+        assertEq(vault.totalShares(), preTotal - shares1, "totalShares not reduced");
 
         // 6) Stayer's pending reward == toStakers (equal shares, zero prior rewardDebt)
         uint256 stayerPending = vault.pendingReward(id2);
         assertEq(stayerPending, toStakers, "stayer pending reward incorrect");
 
         // 7) Quitter position cleared
-        (
-            address owner_,
-            uint96 shares_,
-            uint256 s_,
-            uint256 u_,
-            uint256 rd_
-        ) = vault.positions(id1);
+        (address owner_, uint96 shares_, uint256 s_, uint256 u_, uint256 rd_) = vault.positions(id1);
         assertEq(owner_, address(0));
         assertEq(shares_, 0);
         assertEq(s_, 0);
@@ -422,9 +354,7 @@ contract StorageEvents is Test {
         vm.prank(USER2);
         uint256 id2 = vault.deposit{value: 1 ether}(duration);
 
-        (, uint96 shares1, uint256 start1, uint256 unlock1, ) = vault.positions(
-            id1
-        );
+        (, uint96 shares1, uint256 start1, uint256 unlock1,) = vault.positions(id1);
 
         vm.warp(7 days);
 
@@ -440,8 +370,7 @@ contract StorageEvents is Test {
         vault.harvestProfit(id1);
     }
 
-
-        function testharvestProfit() public {
+    function testharvestProfit() public {
         vm.deal(USER, 10 ether);
         vm.deal(USER2, 10 ether);
 
@@ -453,27 +382,33 @@ contract StorageEvents is Test {
         vm.prank(USER2);
         uint256 id2 = vault.deposit{value: 1 ether}(duration);
 
-        (, uint96 shares1, ,, ) = vault.positions(
-            id1
-        );
+        (, uint96 shares1,,,) = vault.positions(id1);
 
         vm.warp(7 days);
 
         vm.prank(USER2);
         vault.ragequit(id2);
 
-
         vm.prank(USER);
-        
+
         vault.harvestProfit(id1);
-               (, , ,,uint256 postRewardDebt ) = vault.positions(
-            id1
-        );
-        
+        (,,,, uint256 postRewardDebt) = vault.positions(id1);
 
-        assertEq(vault.pendingReward(id1),0);
-        assertEq(postRewardDebt,(shares1*vault.accPenaltyPerShare())/PRECISION);
+        assertEq(vault.pendingReward(id1), 0);
+        assertEq(postRewardDebt, (shares1 * vault.accPenaltyPerShare()) / PRECISION);
+    }
 
+    function testReceiveReverts() public {
+        vm.expectRevert(bytes4(keccak256("DirectEtherNotAllowed()")));
 
+        (bool ok,) = address(vault).call{value: 1 ether}("");
+        ok; // silence warning
+    }
+
+    function testFallbackReverts() public {
+        vm.expectRevert(bytes4(keccak256("UnknownFunctionCalled()")));
+
+        (bool ok,) = address(vault).call{value: 1 ether}(hex"01");
+        ok;
     }
 }
